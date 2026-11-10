@@ -69,6 +69,7 @@ Requires a Codex CLI with plugin hooks; tested with 0.167.0.
 | Policy **warn** | adds the message to the agent's context | the same |
 | Tokens and cost | from the transcript, or OpenTelemetry | reported by Codex after each model request |
 | Failed commands | reported by a hook | the exit code is read from the session log, so it shows once the log is uploaded (at the end of each turn) |
+| Permissions bypassed | reported by a hook | Codex reports a bypass whenever it will not ask for approval, even inside its sandbox. That is recorded as `never-ask`; the *permissions bypassed* finding needs the session log, which says whether the sandbox was off too |
 | Session end | delivered before Claude Code exits | delivered in the background: Codex stops that hook after three seconds |
 | Hosted tools (web search) | hooked | not hooked by Codex, so not recorded |
 
