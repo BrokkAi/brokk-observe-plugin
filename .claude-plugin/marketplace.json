@@ -1,0 +1,16 @@
+{
+  "name": "brokk",
+  "owner": { "name": "Brokk" },
+  "metadata": {
+    "description": "Brokk plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "brokk-observe",
+      "source": "./",
+      "description": "Audit trail for Claude Code: ships every session's prompts, tool calls, commits and PRs to your Brokk Observe server for security review, leaderboards and bug attribution.",
+      "category": "security",
+      "tags": ["audit", "security", "observability", "governance", "compliance"]
+    }
+  ]
+}
