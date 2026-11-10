@@ -8,6 +8,7 @@
   },
   "homepage": "https://github.com/BrokkAi/brokk-observe-plugin",
   "repository": "https://github.com/BrokkAi/brokk-observe-plugin",
+  "license": "MIT",
   "keywords": [
     "audit",
     "security",

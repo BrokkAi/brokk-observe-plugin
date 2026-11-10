@@ -109,3 +109,7 @@ To make auditing mandatory, use [managed settings](https://code.claude.com/docs/
 The server **redacts secrets on ingest** before anything is stored. Covered patterns include cloud keys, GitHub/Anthropic/OpenAI/Stripe/Slack tokens, private keys, JWTs, connection-string passwords and generic `password=` assignments. Each redaction is itself recorded as a security finding, so leaked credentials get rotated. Admins can set a retention period (`OBSERVE_RETENTION_DAYS`). Every dashboard action, such as triage, export or policy change, is written to an admin audit log.
 
 Tell your users their sessions are recorded. Many jurisdictions require it, and it is the right thing to do.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
