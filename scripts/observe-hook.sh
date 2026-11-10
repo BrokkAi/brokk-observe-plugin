@@ -17,11 +17,11 @@
 # Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link)
 
 set -u
-PLUGIN_VERSION="0.3.0"
+PLUGIN_VERSION="0.3.1"
 ARG="${1:-}"
 
 # ----------------------------------------------------------------------------
-# Configuration: env OBSERVE_* (e.g. from managed settings) > plugin options >
+# Configuration: env OBSERVE_* (e.g. from managed settings) >
 # config file (~/.config/brokk-observe/config, KEY=VALUE lines).
 # ----------------------------------------------------------------------------
 CONF_FILE="${OBSERVE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/brokk-observe/config}"
@@ -36,13 +36,13 @@ if [ -f "$CONF_FILE" ]; then
   done < "$CONF_FILE"
 fi
 
-URL="${OBSERVE_URL:-${CLAUDE_PLUGIN_OPTION_SERVER_URL:-$CF_OBSERVE_URL}}"
+URL="${OBSERVE_URL:-$CF_OBSERVE_URL}"
 URL="${URL%/}"
-TOKEN="${OBSERVE_TOKEN:-${CLAUDE_PLUGIN_OPTION_INGEST_TOKEN:-$CF_OBSERVE_TOKEN}}"
-ENFORCE="${OBSERVE_ENFORCE:-${CLAUDE_PLUGIN_OPTION_ENFORCE_POLICIES:-${CF_OBSERVE_ENFORCE:-false}}}"
-TRANSCRIPTS="${OBSERVE_TRANSCRIPTS:-${CLAUDE_PLUGIN_OPTION_UPLOAD_TRANSCRIPTS:-${CF_OBSERVE_TRANSCRIPTS:-true}}}"
-GH_LOGIN="${OBSERVE_GITHUB_LOGIN:-${CLAUDE_PLUGIN_OPTION_GITHUB_LOGIN:-$CF_OBSERVE_GITHUB_LOGIN}}"
-AGENT_NAME="${OBSERVE_AGENT_NAME:-${CLAUDE_PLUGIN_OPTION_AGENT_NAME:-$CF_OBSERVE_AGENT_NAME}}"
+TOKEN="${OBSERVE_TOKEN:-$CF_OBSERVE_TOKEN}"
+ENFORCE="${OBSERVE_ENFORCE:-${CF_OBSERVE_ENFORCE:-false}}"
+TRANSCRIPTS="${OBSERVE_TRANSCRIPTS:-${CF_OBSERVE_TRANSCRIPTS:-true}}"
+GH_LOGIN="${OBSERVE_GITHUB_LOGIN:-$CF_OBSERVE_GITHUB_LOGIN}"
+AGENT_NAME="${OBSERVE_AGENT_NAME:-$CF_OBSERVE_AGENT_NAME}"
 FAIL_CLOSED="${OBSERVE_FAIL_CLOSED:-${CF_OBSERVE_FAIL_CLOSED:-false}}"
 TIMEOUT="${OBSERVE_TIMEOUT:-3}"
 

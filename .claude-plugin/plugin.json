@@ -1,7 +1,7 @@
 {
   "name": "brokk-observe",
   "displayName": "Brokk Observe",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Audit trail for Claude Code: ships every session's prompts, tool calls, commits and PRs to your Brokk Observe server for security review, leaderboards and bug attribution.",
   "author": {
     "name": "Brokk"
@@ -15,38 +15,5 @@
     "governance",
     "compliance",
     "leaderboard"
-  ],
-  "userConfig": {
-    "server_url": {
-      "type": "string",
-      "title": "Brokk Observe server URL",
-      "description": "Base URL of your Brokk Observe server, e.g. https://observe.example.com. Leave empty if your organization sets OBSERVE_URL centrally.",
-      "required": false
-    },
-    "ingest_token": {
-      "type": "string",
-      "title": "Ingest token",
-      "description": "A bko_ingest_... key from the dashboard's Settings page. Leave empty if your organization sets OBSERVE_TOKEN centrally.",
-      "sensitive": true,
-      "required": false
-    },
-    "enforce_policies": {
-      "type": "boolean",
-      "title": "Enforce organization policies",
-      "description": "Ask the server for an allow/ask/deny decision before every tool call. Adds one network round-trip per tool call.",
-      "default": false
-    },
-    "upload_transcripts": {
-      "type": "boolean",
-      "title": "Upload transcripts",
-      "description": "Upload the conversation transcript (secrets are redacted server-side) for LLM audit and token/cost tracking.",
-      "default": true
-    },
-    "github_login": {
-      "type": "string",
-      "title": "GitHub login",
-      "description": "Optional. Links your sessions to your PRs and reviews. Detected automatically from the gh CLI when available.",
-      "required": false
-    }
-  }
+  ]
 }

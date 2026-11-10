@@ -10,26 +10,22 @@ With **enforce mode** on, the plugin also applies your organization's central gu
 
 ## Install
 
-```
-/plugin marketplace add BrokkAi/brokk-observe-plugin
-/plugin install brokk-observe@brokk
-```
-
-Then register the machine with your email address:
+Sign in to your Brokk Observe dashboard, open **Connect Claude Code**, and run the command it shows in a terminal:
 
 ```
 curl -fsSL https://observe.example.com/register.sh | bash -s you@company.com
 ```
 
-The server mails you a link. Open it, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`. There is nothing to copy or paste. (The same script is `scripts/register.sh` in this repository.)
+It mails you a link. Open it, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`, then installs this plugin into Claude Code. There is nothing to configure, copy or paste. Start a new Claude Code session and it appears in the dashboard.
 
-To use a shared ingest token instead (CI, fleets, managed settings), use one of these options:
+If the `claude` command is not on your PATH, the script says so; install the plugin from inside Claude Code instead:
 
-- **Interactive:** `/plugin configure brokk-observe@brokk`. It asks for the server URL and an ingest token, and stores the token in your OS keychain.
-- **Environment:** `export OBSERVE_URL=https://observe.example.com OBSERVE_TOKEN=bko_ingest_…`
-- **Config file:** put `KEY=VALUE` lines in `~/.config/brokk-observe/config`.
+```
+/plugin marketplace add BrokkAi/brokk-observe-plugin
+/plugin install brokk-observe@brokk
+```
 
-Ingest tokens are created in the dashboard under **Settings → API keys**, or with `brokk-observe keys create --scope ingest --name laptops`.
+For CI, fleets and managed settings, skip registration and set a shared ingest token in the environment: `export OBSERVE_URL=https://observe.example.com OBSERVE_TOKEN=bko_ingest_…` (tokens are created in the dashboard under **Settings → API keys**).
 
 Check it with `/brokk-observe:status`.
 
@@ -43,20 +39,20 @@ Check it with `/brokk-observe:status`.
 
 ## Settings
 
-Environment variables win over plugin options, which win over the config file. Managed settings can therefore enforce values centrally.
+Set these as environment variables or as `KEY=VALUE` lines in `~/.config/brokk-observe/config`. Environment variables win, so managed settings can enforce values centrally.
 
-| Env var | Plugin option | Default | Meaning |
-|---|---|---|---|
-| `OBSERVE_URL` | `server_url` | — | Server base URL |
-| `OBSERVE_TOKEN` | `ingest_token` | — | Ingest key (`bko_ingest_…`) |
-| `OBSERVE_ENFORCE` | `enforce_policies` | `false` | Ask the server for a policy decision before every tool call |
-| `OBSERVE_FAIL_CLOSED` | — | `false` | In enforce mode, deny tool calls when the server is unreachable |
-| `OBSERVE_TIMEOUT` | — | `3` | Seconds to wait for a policy decision |
-| `OBSERVE_TRANSCRIPTS` | `upload_transcripts` | `true` | Upload the transcript (for token/cost data and LLM audit) |
-| `OBSERVE_GITHUB_LOGIN` | `github_login` | from `gh` | Links your sessions to your PRs and reviews |
-| `OBSERVE_AGENT_NAME` | — | `claude-code` | Label for automated agents, e.g. `nightly-triage` |
-| `OBSERVE_USER_EMAIL` | — | `git config user.email` | Identity override |
-| `OBSERVE_DATA_DIR` | — | `$CLAUDE_PLUGIN_DATA` | Local spool and state |
+| Env var | Default | Meaning |
+|---|---|---|
+| `OBSERVE_URL` | — | Server base URL |
+| `OBSERVE_TOKEN` | — | Ingest key (`bko_ingest_…`) |
+| `OBSERVE_ENFORCE` | `false` | Ask the server for a policy decision before every tool call |
+| `OBSERVE_FAIL_CLOSED` | `false` | In enforce mode, deny tool calls when the server is unreachable |
+| `OBSERVE_TIMEOUT` | `3` | Seconds to wait for a policy decision |
+| `OBSERVE_TRANSCRIPTS` | `true` | Upload the transcript (for token/cost data and LLM audit) |
+| `OBSERVE_GITHUB_LOGIN` | from `gh` | Links your sessions to your PRs and reviews |
+| `OBSERVE_AGENT_NAME` | `claude-code` | Label for automated agents, e.g. `nightly-triage` |
+| `OBSERVE_USER_EMAIL` | `git config user.email` | Identity override |
+| `OBSERVE_DATA_DIR` | `$CLAUDE_PLUGIN_DATA` | Local spool and state |
 
 ## Rolling out to an organization
 
