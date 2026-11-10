@@ -7,8 +7,9 @@
 # ingest key issued to you and saves it (with the server URL) in the plugin's
 # config file. Nothing to copy or paste.
 #
-# It then installs the Brokk Observe plugin into Claude Code, if the `claude`
-# command is on this machine, so this one command is the whole setup.
+# It then installs the Brokk Observe plugin into Claude Code and into OpenAI
+# Codex, whichever of the `claude` and `codex` commands are on this machine,
+# so this one command is the whole setup.
 #
 # The server also serves this file, with its own address filled in:
 #   curl -fsSL https://observe.example.com/register.sh | bash -s you@company.com
@@ -79,29 +80,67 @@ tmp="$CONF_FILE.tmp.$$"
 mv "$tmp" "$CONF_FILE"
 chmod 600 "$CONF_FILE"
 
-echo "Registered: $HOST reports Claude Code sessions to $URL as $EMAIL."
+echo "Registered: $HOST reports agent sessions to $URL as $EMAIL."
 echo "Saved to $CONF_FILE"
 
-# The plugin is what sends the sessions. Install it unless it is there already.
-# stdin is redirected because this script is usually being read from a pipe.
+# The plugin is what sends the sessions. Install it into each agent on this
+# machine, unless it is there already. stdin is redirected because this script
+# is usually being read from a pipe.
 PLUGIN_SOURCE="${OBSERVE_PLUGIN_SOURCE:-BrokkAi/brokk-observe-plugin}"
-install_plugin() {
-  command -v claude >/dev/null 2>&1 || return 1
+install_claude() {
   if claude plugin list </dev/null 2>/dev/null | grep -q 'brokk-observe@'; then return 0; fi
   claude plugin marketplace add "$PLUGIN_SOURCE" </dev/null >/dev/null 2>&1 || true  # fine if it was added before
   claude plugin install brokk-observe@brokk </dev/null >/dev/null 2>&1
 }
-if [ "${OBSERVE_SKIP_PLUGIN:-}" = 1 ]; then
-  :
-elif install_plugin; then
-  echo "The Brokk Observe plugin is installed in Claude Code."
-  echo "Done. Start a new Claude Code session and it appears in the dashboard: $URL"
-else
-  echo
-  echo "One step left: install the plugin. In Claude Code, run:"
-  echo "  /plugin marketplace add $PLUGIN_SOURCE"
-  echo "  /plugin install brokk-observe@brokk"
-  echo "Then start a new session and it appears in the dashboard: $URL"
+install_codex() {
+  codex plugin marketplace add "$PLUGIN_SOURCE" </dev/null >/dev/null 2>&1 || true   # fine if it was added before
+  codex plugin marketplace upgrade brokk </dev/null >/dev/null 2>&1 || true          # an older copy gains Codex support
+  codex plugin add brokk-observe@brokk </dev/null >/dev/null 2>&1
+}
+claude_manual() {
+  echo "  In Claude Code, run:"
+  echo "    /plugin marketplace add $PLUGIN_SOURCE"
+  echo "    /plugin install brokk-observe@brokk"
+}
+codex_manual() {
+  echo "  For Codex, run in a terminal:"
+  echo "    codex plugin marketplace add $PLUGIN_SOURCE"
+  echo "    codex plugin add brokk-observe@brokk"
+}
+# Codex runs a plugin's hooks only after the user has reviewed them.
+codex_trust() {
+  echo "  One step left in Codex: start it and, when it asks about hooks that need review,"
+  echo "  trust the Brokk Observe ones (or run /hooks). Codex does not run them until you do."
+}
+if [ "${OBSERVE_SKIP_PLUGIN:-}" != 1 ]; then
+  found=0
+  if command -v claude >/dev/null 2>&1; then
+    found=1
+    if install_claude; then
+      echo "The Brokk Observe plugin is installed in Claude Code."
+    else
+      echo "The plugin could not be installed into Claude Code from here."
+      claude_manual
+    fi
+  fi
+  if command -v codex >/dev/null 2>&1; then
+    found=1
+    if install_codex; then
+      echo "The Brokk Observe plugin is installed in Codex."
+    else
+      echo "The plugin could not be installed into Codex from here."
+      codex_manual
+    fi
+    codex_trust
+  fi
+  if [ "$found" = 0 ]; then
+    echo
+    echo "One step left: install the plugin (neither the claude nor the codex command is on your PATH)."
+    claude_manual
+    codex_manual
+    codex_trust
+  fi
+  echo "Start a new session and it appears in the dashboard: $URL"
 fi
 if [ -n "${OBSERVE_TOKEN:-}" ] && [ "$OBSERVE_TOKEN" != "$TOKEN" ]; then
   echo "Note: OBSERVE_TOKEN is set in your environment and takes precedence; unset it to use the new key." >&2

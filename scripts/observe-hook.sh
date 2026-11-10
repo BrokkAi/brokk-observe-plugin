@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# Brokk Observe hook for Claude Code.
+# Brokk Observe hook for Claude Code and OpenAI Codex.
 #
-# Forwards every hook event to a Brokk Observe server. Design goals:
-#   * Never slow Claude down: events are written to a local spool (no network)
-#     and flushed in the background. Git is only consulted on session
+# Forwards every hook event to a Brokk Observe server. Both agents run command
+# hooks with the same JSON on stdin, so one script serves both. Design goals:
+#   * Never slow the agent down: events are written to a local spool (no
+#     network) and flushed in the background. Git is only consulted on session
 #     boundaries.
 #   * Never lose events: the spool survives crashes, offline laptops and
 #     server outages, and is flushed in order on the next event.
-#   * Never change Claude's behaviour unless policy enforcement is on: the
+#   * Never change the agent's behaviour unless policy enforcement is on: the
 #     script prints nothing and exits 0. With enforcement on, PreToolUse asks
 #     the server synchronously and prints its allow/ask/deny decision.
 #   * Portable: bash 3.2 (macOS), curl and git. No jq, python or node.
 #
-# Usage (from hooks.json):  observe-hook.sh <HookEventName>   (event JSON on stdin)
+# Usage (from hooks.json):  observe-hook.sh <HookEventName> [codex]   (event JSON on stdin)
 # Maintenance:              observe-hook.sh --status | --flush | --session [id]
 # Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link)
 
 set -u
-PLUGIN_VERSION="0.3.1"
+PLUGIN_VERSION="0.4.0"
 ARG="${1:-}"
+# The agent running the hook: Codex's hooks file passes "codex" (hooks/codex-hooks.json).
+case "${2:-}" in codex) AGENT=codex ;; *) AGENT=claude-code ;; esac
 
 # ----------------------------------------------------------------------------
 # Configuration: env OBSERVE_* (e.g. from managed settings) >
@@ -46,7 +49,18 @@ AGENT_NAME="${OBSERVE_AGENT_NAME:-$CF_OBSERVE_AGENT_NAME}"
 FAIL_CLOSED="${OBSERVE_FAIL_CLOSED:-${CF_OBSERVE_FAIL_CLOSED:-false}}"
 TIMEOUT="${OBSERVE_TIMEOUT:-3}"
 
-DATA="${OBSERVE_DATA_DIR:-${CLAUDE_PLUGIN_DATA:-$HOME/.claude/brokk-observe}}"
+# Both agents name the plugin's data directory when they run a hook. Run by
+# hand from an agent's plugin cache (.../plugins/cache/<marketplace>/<plugin>/
+# <version>/scripts), the script finds that same directory itself, so --status
+# and --flush look at the spool the hooks write to.
+DATA_DEFAULT="$HOME/.claude/brokk-observe"
+case "$0" in
+  */plugins/cache/*/*/*/scripts/*)
+    cached=${0#*/plugins/cache/}
+    cached_data="${0%%/plugins/cache/*}/plugins/data/$(printf '%s' "$cached" | cut -d/ -f2)-${cached%%/*}"
+    [ -d "$cached_data" ] && DATA_DEFAULT=$cached_data ;;
+esac
+DATA="${OBSERVE_DATA_DIR:-${CLAUDE_PLUGIN_DATA:-$DATA_DEFAULT}}"
 SPOOL="$DATA/spool"
 STATE="$DATA/state"
 LOCK="$DATA/flush.lock"
@@ -264,7 +278,7 @@ fi
 # spool file, and lets the server recognise an event it has already stored
 # when a batch has to be sent again.
 EVENT_ID="$TS-$$-$RANDOM$RANDOM"
-META="{\"event_id\":\"$EVENT_ID\",\"ts\":$TS,\"plugin_version\":\"$PLUGIN_VERSION\",\"runtime\":\"$RUNTIME\",$ident"
+META="{\"event_id\":\"$EVENT_ID\",\"ts\":$TS,\"plugin_version\":\"$PLUGIN_VERSION\",\"agent\":\"$AGENT\",\"runtime\":\"$RUNTIME\",$ident"
 [ -n "$AGENT_NAME" ] && META="$META,\"agent_name\":\"$(esc "$AGENT_NAME")\""
 
 # Git context on session boundaries only (keeps tool-call hooks fast).
@@ -326,9 +340,16 @@ spool_write
 
 case "$EVENT" in
   SessionEnd)
+    TP=$(json_str transcript_path)
+    if [ "$AGENT" = codex ]; then
+      # Codex stops a SessionEnd hook after three seconds at most, so the
+      # last delivery runs detached and outlives both the hook and Codex.
+      ( flush 5; upload_transcript "$SID" "$TP"; rm -f "$IDENT" "$STATE/$SID.head0" ) </dev/null >/dev/null 2>&1 &
+      exit 0
+    fi
     # Finish synchronously so nothing is lost when Claude exits (e.g. -p mode).
     flush 5
-    upload_transcript "$SID" "$(json_str transcript_path)"
+    upload_transcript "$SID" "$TP"
     rm -f "$IDENT" "$STATE/$SID.head0" 2>/dev/null
     exit 0 ;;
   SessionStart)
@@ -347,7 +368,10 @@ case "$EVENT" in
         *) why="the server answered HTTP $err_code"; [ -n "$stale" ] || why="" ;;
       esac
       if [ -n "$why" ] && [ "$waiting" -gt 1 ]; then
-        printf '{"systemMessage":"Brokk Observe: %s events have not been delivered because %s. Run /brokk-observe:status."}\n' "$waiting" "$why"
+        # Codex has no plugin slash commands; the script reports its own status.
+        how="Run /brokk-observe:status."
+        [ "$AGENT" = codex ] && how="Run this in a terminal: $(esc "$0") --status"
+        printf '{"systemMessage":"Brokk Observe: %s events have not been delivered because %s. %s"}\n' "$waiting" "$why" "$how"
       fi
     fi
     (

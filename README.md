@@ -1,6 +1,6 @@
-# Brokk Observe — Claude Code plugin
+# Brokk Observe — plugin for Claude Code and OpenAI Codex
 
-Records every Claude Code session for your organization's audit trail. The plugin captures prompts, tool calls (with inputs, outputs and timings), permission decisions, subagents, compactions, commits and PRs, and sends them to a Brokk Observe server. The server then:
+Records every Claude Code and Codex session for your organization's audit trail. The plugin captures prompts, tool calls (with inputs, outputs and timings), permission decisions, subagents, compactions, commits and PRs, and sends them to a Brokk Observe server. The server then:
 
 - runs security detectors on each event and an optional LLM security review on each session,
 - ranks people and agents on leaderboards,
@@ -8,34 +8,71 @@ Records every Claude Code session for your organization's audit trail. The plugi
 
 With **enforce mode** on, the plugin also applies your organization's central guardrail policies before each tool call runs (allow / ask / deny).
 
+One plugin serves both agents: the two run command hooks that receive the same JSON, so the same script handles both. [What differs in Codex](#codex) is listed below.
+
 ## Install
 
-Sign in to your Brokk Observe dashboard, open **Connect Claude Code**, and run the command it shows in a terminal:
+Sign in to your Brokk Observe dashboard, open **Connect an agent**, and run the command it shows in a terminal:
 
 ```
 curl -fsSL https://observe.example.com/register.sh | bash -s you@company.com
 ```
 
-It mails you a link. Open it, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`, then installs this plugin into Claude Code. There is nothing to configure, copy or paste. Start a new Claude Code session and it appears in the dashboard.
+It mails you a link. Open it, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`, then installs this plugin into Claude Code and into Codex, whichever of the `claude` and `codex` commands it finds. There is nothing to configure, copy or paste. Start a new session and it appears in the dashboard.
 
-If the `claude` command is not on your PATH, the script says so; install the plugin from inside Claude Code instead:
+**Codex needs one more step.** Codex does not run a plugin's hooks until you have reviewed them. The next time you start Codex it says that hooks need review: choose to trust the Brokk Observe ones there, or run `/hooks`. Until you do, nothing is recorded. After a plugin update that changes the hook script, Codex asks again.
+
+If a command is not on your PATH, the script says so; install the plugin by hand instead. In Claude Code:
 
 ```
 /plugin marketplace add BrokkAi/brokk-observe-plugin
 /plugin install brokk-observe@brokk
 ```
 
+For Codex, in a terminal:
+
+```
+codex plugin marketplace add BrokkAi/brokk-observe-plugin
+codex plugin add brokk-observe@brokk
+```
+
 For CI, fleets and managed settings, skip registration and set a shared ingest token in the environment: `export OBSERVE_URL=https://observe.example.com OBSERVE_TOKEN=bko_ingest_…` (tokens are created in the dashboard under **Settings → API keys**).
 
-Check it with `/brokk-observe:status`.
+Check it with `/brokk-observe:status` in Claude Code.
 
 ## Commands
+
+These are Claude Code slash commands.
 
 | Command | What it does |
 |---|---|
 | `/brokk-observe:status` | Server, token, enforcement mode, spooled events, and a live connectivity check |
 | `/brokk-observe:session` | This session's audit summary: tool calls, cost, risk score, open findings, dashboard link |
 | `/brokk-observe:flush` | Send any locally spooled events now |
+
+Codex has no plugin slash commands. Run the script behind them in a terminal instead, with `--status`, `--session` or `--flush`:
+
+```
+~/.codex/plugins/cache/brokk/brokk-observe/*/scripts/observe-hook.sh --status
+```
+
+## Codex
+
+Requires a Codex CLI with plugin hooks; tested with 0.167.0.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Shell commands | `Bash` | `Bash` (same detectors and policies) |
+| File edits | `Edit`, `Write`, one call per file | `apply_patch`, one call for a whole patch. The server checks and counts it as the file writes and edits it makes, so a policy on `Edit\|Write` and a file path covers it |
+| Policy **deny** | blocks the call | blocks the call |
+| Policy **ask** | pauses for the developer to approve | **denies**. A Codex hook cannot ask, and Codex would run the call if the hook tried to. The reason tells the developer to run it themselves if it is intended |
+| Policy **warn** | adds the message to the agent's context | the same |
+| Tokens and cost | from the transcript, or OpenTelemetry | reported by Codex after each model request |
+| Failed commands | reported by a hook | the exit code is read from the session log, so it shows once the log is uploaded (at the end of each turn) |
+| Session end | delivered before Claude Code exits | delivered in the background: Codex stops that hook after three seconds |
+| Hosted tools (web search) | hooked | not hooked by Codex, so not recorded |
+
+The hooks Codex runs are in [hooks/codex-hooks.json](hooks/codex-hooks.json). Both agents share one registration and one config file; each keeps its own local spool.
 
 ## Settings
 
@@ -48,15 +85,15 @@ Set these as environment variables or as `KEY=VALUE` lines in `~/.config/brokk-o
 | `OBSERVE_ENFORCE` | `false` | Ask the server for a policy decision before every tool call |
 | `OBSERVE_FAIL_CLOSED` | `false` | In enforce mode, deny tool calls when the server is unreachable |
 | `OBSERVE_TIMEOUT` | `3` | Seconds to wait for a policy decision |
-| `OBSERVE_TRANSCRIPTS` | `true` | Upload the transcript (for token/cost data and LLM audit) |
+| `OBSERVE_TRANSCRIPTS` | `true` | Upload the transcript, or Codex's session log (for token/cost data, failed commands and LLM audit) |
 | `OBSERVE_GITHUB_LOGIN` | from `gh` | Links your sessions to your PRs and reviews |
-| `OBSERVE_AGENT_NAME` | `claude-code` | Label for automated agents, e.g. `nightly-triage` |
+| `OBSERVE_AGENT_NAME` | `claude-code` or `codex` | Label for automated agents, e.g. `nightly-triage` |
 | `OBSERVE_USER_EMAIL` | `git config user.email` | Identity override |
-| `OBSERVE_DATA_DIR` | `$CLAUDE_PLUGIN_DATA` | Local spool and state |
+| `OBSERVE_DATA_DIR` | the plugin's data directory | Local spool and state |
 
 ## Rolling out to an organization
 
-To make auditing mandatory, use [managed settings](https://code.claude.com/docs/en/managed-settings). Place them in `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `/etc/claude-code/managed-settings.json` (Linux) or your MDM, or set them in claude.ai's server-managed settings:
+To make auditing mandatory in Claude Code, use [managed settings](https://code.claude.com/docs/en/managed-settings). Place them in `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `/etc/claude-code/managed-settings.json` (Linux) or your MDM, or set them in claude.ai's server-managed settings:
 
 ```json
 {
@@ -91,20 +128,22 @@ To make auditing mandatory, use [managed settings](https://code.claude.com/docs/
 }
 ```
 
+**Codex:** install the plugin as above and set `OBSERVE_URL`, `OBSERVE_TOKEN` and `OBSERVE_ENFORCE` in the environment Codex runs in. Hooks a user installs need that user's review before they run. To make them mandatory, deploy the hook script with your device management and declare the hooks in Codex's `requirements.toml`: managed hooks are trusted by policy and cannot be switched off, and `allow_managed_hooks_only = true` stops other hooks from running. See [Codex hooks](https://developers.openai.com/codex/hooks). Each managed hook command is the script, the event name and `codex`, as in [hooks/codex-hooks.json](hooks/codex-hooks.json).
+
 ## How it works
 
-- **Never slows Claude down.** Each hook writes its event to a local spool (no network) in about 20–60 ms, then exits. A background flusher sends spooled events in order. Git is only consulted at session boundaries. In enforce mode, `PreToolUse` makes one synchronous request, bounded by `OBSERVE_TIMEOUT`.
-- **Never loses events.** If the server is down or the laptop is offline, events stay in the spool, which survives restarts. They are delivered on the next hook, and each carries an id, so a batch that is sent twice is stored once. `SessionEnd` flushes synchronously. Events the server has not accepted after 7 days are dropped.
+- **Never slows the agent down.** Each hook writes its event to a local spool (no network) in about 20–60 ms, then exits. A background flusher sends spooled events in order. Git is only consulted at session boundaries. In enforce mode, `PreToolUse` makes one synchronous request, bounded by `OBSERVE_TIMEOUT`.
+- **Never loses events.** If the server is down or the laptop is offline, events stay in the spool, which survives restarts. They are delivered on the next hook, and each carries an id, so a batch that is sent twice is stored once. `SessionEnd` flushes synchronously in Claude Code, and in the background in Codex. Events the server has not accepted after 7 days are dropped.
 - **Says so when delivery is broken.** If the server rejects the ingest token, or has been unreachable for a day with events waiting, the next session starts with a one-line warning. `/brokk-observe:status` shows the last delivery failure.
 - **Never changes behaviour by accident.** Apart from that warning the script prints nothing and always exits 0. The only exception is enforce mode, where it prints the server's decision. Enforce mode fails open unless `OBSERVE_FAIL_CLOSED=true`; with fail-closed on, a plugin that has no server configured denies tool calls too.
 - **Portable.** It needs only bash 3.2+ (macOS default), `curl` and `git`. No jq, Python or Node.
 
 ## What leaves the machine
 
-- The hook event JSON that Claude Code provides: prompts, tool inputs and outputs, file paths.
+- The hook event JSON that Claude Code or Codex provides: prompts, tool inputs and outputs, file paths.
 - Git remote, with any embedded credentials stripped before sending, plus branch, HEAD, and the subjects of commits you made during the session.
 - Your git email and name, your GitHub login if known, hostname and OS.
-- With transcript upload on: the session transcript.
+- With transcript upload on: the session transcript (Claude Code) or session log (Codex).
 
 The server **redacts secrets on ingest** before anything is stored. Covered patterns include cloud keys, GitHub/Anthropic/OpenAI/Stripe/Slack tokens, private keys, JWTs, connection-string passwords and generic `password=` assignments. Each redaction is itself recorded as a security finding, so leaked credentials get rotated. Admins can set a retention period (`OBSERVE_RETENTION_DAYS`). Every dashboard action, such as triage, export or policy change, is written to an admin audit log.
 

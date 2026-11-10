@@ -1,0 +1,29 @@
+{
+  "name": "brokk-observe",
+  "version": "0.4.0",
+  "description": "Audit trail for Codex: ships every session's prompts, tool calls, commits and PRs to your Brokk Observe server for security review, leaderboards and bug attribution.",
+  "author": {
+    "name": "Brokk"
+  },
+  "homepage": "https://github.com/BrokkAi/brokk-observe-plugin",
+  "repository": "https://github.com/BrokkAi/brokk-observe-plugin",
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "security",
+    "observability",
+    "governance",
+    "compliance",
+    "leaderboard"
+  ],
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Brokk Observe",
+    "shortDescription": "Records your Codex sessions for your organization's audit trail",
+    "longDescription": "Sends each session's prompts, tool calls, commits and PRs to your organization's Brokk Observe server, which reviews them for security problems and can apply central guardrail policies before a tool call runs.",
+    "developerName": "Brokk",
+    "category": "Security",
+    "capabilities": [],
+    "websiteURL": "https://github.com/BrokkAi/brokk-observe-plugin"
+  }
+}
