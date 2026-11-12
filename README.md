@@ -147,7 +147,7 @@ What an agent carries from one session to the next shapes what it does: the inst
 | | Claude Code | Codex |
 |---|---|---|
 | Instruction files | every file Claude Code reports loading (`InstructionsLoaded`): CLAUDE.md, CLAUDE.local.md, `.claude/rules/`, imports, managed CLAUDE.md, and why each was loaded; a project's AGENTS.md when there is no CLAUDE.md | `AGENTS.md` (or `AGENTS.override.md`) in `$CODEX_HOME` and from the top of the checkout down to the working directory |
-| The agent's own memory | the auto memory directory, `<config>/projects/<project>/memory/*.md`, or wherever `autoMemoryDirectory` puts it; nothing when auto memory is off | `$CODEX_HOME/memories/` and `memories_v2/`, when Codex memories are on. They cover every project on the machine |
+| The agent's own memory | the auto memory directory, `<config>/projects/<project>/memory/*.md`, or wherever `autoMemoryDirectory` in your own settings puts it (a repository's settings cannot move it); nothing when auto memory is off | `$CODEX_HOME/memories/` and `memories_v2/`, when Codex memories are on. They cover every project on the machine |
 
 Each file is reported by its git blob id. The server answers with the versions it does not hold yet, and only those are sent, so a session that starts with the same memory as the last one sends a list and nothing else. Files over 1 MiB are listed without their content; at most 300 files are reported.
 

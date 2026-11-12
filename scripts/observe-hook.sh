@@ -256,7 +256,10 @@ claude_memory_dir() { # $1=transcript path
   root=$(repo_root)
   set -- "$CWD/.claude/settings.local.json" "$CWD/.claude/settings.json" "$root/.claude/settings.local.json" "$root/.claude/settings.json" "$home/settings.json"
   setting_off autoMemoryEnabled "$@" && return 1
-  if d=$(setting_str autoMemoryDirectory "$@"); then
+  # Where memory is kept is taken only from the user's own settings: a
+  # repository's settings file could otherwise point this at any directory
+  # on the machine and have its files reported.
+  if d=$(setting_str autoMemoryDirectory "$home/settings.json"); then
     case "$d" in \~/*) d="$HOME/${d#\~/}" ;; esac
     [ -d "$d" ] && { printf '%s' "$d"; return 0; }
   fi
@@ -369,9 +372,11 @@ report_memory() { # $1=session id $2=transcript path $3=start|later
   code="${out##*$'\n'}"
   body="${out%$'\n'*}"
   case "$code" in
+    # A server without memory reporting: say nothing more until the files change.
+    404) cp "$tmp.key" "$sent"; touch "$STATE/$sid.memok" ;;
     2*)
       cp "$tmp.key" "$sent"
-      cut -f7 "$tmp.report" >> "$sent.paths"
+      { cat "$sent.paths"; cut -f7 "$tmp.report"; } | sort -u > "$tmp.paths" && mv "$tmp.paths" "$sent.paths"
       for h in $(printf '%s' "$body" | grep -o '[0-9a-f]\{40\}'); do
         p=$(awk -F '\t' -v h="$h" '$1 == h { print $7; exit }' "$tmp.report")
         [ -f "$p" ] || continue
