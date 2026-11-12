@@ -3,9 +3,9 @@
 #
 #   register.sh [you@company.com] [https://observe.example.com]
 #
-# The server mails a link to the address. Open it, and this script collects an
-# ingest key issued to you and saves it (with the server URL) in the plugin's
-# config file. Nothing to copy or paste.
+# The server mails a link to the address, and this script prints a code. Open
+# the link, enter the code, and this script collects an ingest key issued to
+# you and saves it (with the server URL) in the plugin's config file.
 #
 # It then installs the Brokk Observe plugin into Claude Code and into OpenAI
 # Codex, whichever of the `claude` and `codex` commands are on this machine,
@@ -48,8 +48,20 @@ fi
 DEVICE_CODE=$(field device_code "$body")
 [ -n "$DEVICE_CODE" ] || { echo "The server sent no device code." >&2; exit 1; }
 
+# The page behind the link asks for this code, so the link alone registers
+# nothing: only someone who can read this terminal can approve the machine.
+USER_CODE=$(field user_code "$body")
+
 echo "A link is on its way to $EMAIL."
-echo "Open it to register this machine ($HOST). Waiting..."
+if [ -n "$USER_CODE" ]; then
+  echo "Open it and enter this code to register this machine ($HOST):"
+  echo
+  echo "    $USER_CODE"
+  echo
+  echo "Waiting..."
+else
+  echo "Open it to register this machine ($HOST). Waiting..."
+fi
 
 deadline=$(( $(date +%s) + 900 ))
 TOKEN=""
@@ -68,7 +80,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       exit 1 ;;
   esac
 done
-[ -n "$TOKEN" ] || { echo "The link was not opened in time. Run this again for a new one." >&2; exit 1; }
+[ -n "$TOKEN" ] || { echo "The link was not approved in time. Run this again for a new one." >&2; exit 1; }
 
 # Keep every other setting in the config file; replace the server and token.
 mkdir -p "$(dirname "$CONF_FILE")"

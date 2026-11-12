@@ -18,7 +18,7 @@ Sign in to your Brokk Observe dashboard, open **Connect an agent**, and run the 
 curl -fsSL https://observe.example.com/register.sh | bash -s you@company.com
 ```
 
-It mails you a link. Open it, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`, then installs this plugin into Claude Code and into Codex, whichever of the `claude` and `codex` commands it finds. There is nothing to configure, copy or paste. Start a new session and it appears in the dashboard.
+It mails you a link and prints a short code. Open the link, enter the code, and the machine is registered to you: the script saves the server address and a key of its own in `~/.config/brokk-observe/config`, then installs this plugin into Claude Code and into Codex, whichever of the `claude` and `codex` commands it finds. There is nothing else to set up. Start a new session and it appears in the dashboard.
 
 **Codex needs one more step.** Codex does not run a plugin's hooks until you have reviewed them. The next time you start Codex it says that hooks need review: choose to trust the Brokk Observe ones there, or run `/hooks`. Until you do, nothing is recorded. After a plugin update that changes the hook script, Codex asks again.
 
