@@ -13,12 +13,16 @@
 #     the server synchronously and prints its allow/ask/deny decision.
 #   * Portable: bash 3.2 (macOS), curl and git. No jq, python or node.
 #
+#   * Sessions from before the plugin: when the organization allows it, the
+#     transcripts they left are uploaded once, by a detached background
+#     process that SessionStart starts and never waits for (see Backfill).
+#
 # Usage (from hooks.json):  observe-hook.sh <HookEventName> [codex]   (event JSON on stdin)
-# Maintenance:              observe-hook.sh --status | --flush | --session [id]
+# Maintenance:              observe-hook.sh --status | --flush | --session [id] | --backfill [codex]
 # Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link, prints a code)
 
 set -u
-PLUGIN_VERSION="0.4.0"
+PLUGIN_VERSION="0.5.0"
 ARG="${1:-}"
 # The agent running the hook: Codex's hooks file passes "codex" (hooks/codex-hooks.json).
 case "${2:-}" in codex) AGENT=codex ;; *) AGENT=claude-code ;; esac
@@ -189,6 +193,220 @@ upload_transcript() {
 }
 
 # ----------------------------------------------------------------------------
+# Backfill: the sessions that ran on this machine before the plugin did.
+#
+# When the organization allows it (the server says how many days back), the
+# transcripts those sessions left are uploaded once, a few hundred lines per
+# request. A detached, low-priority process does it: SessionStart starts it
+# and returns, so no session ever waits for it. It keeps its place in every
+# transcript, so when it is stopped (the laptop sleeps, the server is busy, the
+# agent's process group is killed) the next session start picks it up again.
+# It has a lock of its own, so live events are never held up behind it.
+# ----------------------------------------------------------------------------
+BF="$DATA/backfill"
+
+backfill_note() { printf '%s %s\n' "$(date +%s)" "$1" > "$BF/last" 2>/dev/null; }
+
+# Do not start again for $1 seconds, because of $2.
+backfill_wait() {
+  printf '%s' "$(( $(date +%s) + $1 ))" > "$BF/wait_until" 2>/dev/null
+  backfill_note "$2"
+}
+
+# Whether a session start should start it: transcripts may be uploaded, it
+# has not finished, and it is not waiting to try again. Only file checks: this
+# runs in the hook.
+backfill_due() {
+  is_true "$TRANSCRIPTS" && [ -n "$URL" ] && [ -n "$TOKEN" ] || return 1
+  [ ! -f "$BF/done" ] || return 1
+  local resume_at
+  resume_at=$(cat "$BF/wait_until" 2>/dev/null)
+  case "$resume_at" in ''|*[!0-9]*) resume_at=0 ;; esac
+  [ "$(date +%s)" -ge "$resume_at" ]
+}
+
+backfill_running() { [ -d "$BF/lock" ] && [ -z "$(find "$BF/lock" -maxdepth 0 -mmin +15 2>/dev/null)" ]; }
+
+backfill_lock() {
+  mkdir "$BF/lock" 2>/dev/null && return 0
+  # Break a lock left by a process that was killed.
+  if [ -n "$(find "$BF/lock" -maxdepth 0 -mmin +15 2>/dev/null)" ]; then
+    rmdir "$BF/lock" 2>/dev/null
+    mkdir "$BF/lock" 2>/dev/null && return 0
+  fi
+  return 1
+}
+
+# Detached from the agent (its own session where setsid exists) and niced.
+backfill_start() {
+  mkdir -p "$BF" 2>/dev/null
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup nice -n 10 bash "$0" --backfill-run "$AGENT" </dev/null >/dev/null 2>&1 &
+  else
+    nohup nice -n 10 bash "$0" --backfill-run "$AGENT" </dev/null >/dev/null 2>&1 &
+  fi
+}
+
+# This agent's transcripts written to in the last $1 days, one path a line.
+backfill_files() {
+  if [ "$AGENT" = codex ]; then
+    find "${CODEX_HOME:-$HOME/.codex}/sessions" -type f -name 'rollout-*.jsonl' -mtime "-$1" 2>/dev/null
+  else
+    find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -mindepth 2 -maxdepth 2 -type f -name '*.jsonl' -mtime "-$1" 2>/dev/null
+  fi | sort
+}
+
+# The session id a transcript is named after: Claude Code's <id>.jsonl,
+# Codex's rollout-<time>-<id>.jsonl.
+backfill_sid() {
+  local b=${1##*/}
+  printf '%s' "${b%.jsonl}" | grep -oE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+}
+
+# The first line of an upload: who ran the session, and where, as hook events
+# say it. The directory it ran in comes from the transcript; the identity and
+# the remote from that directory's git configuration, as they are now.
+backfill_header() {
+  local cwd email name remote login host os m
+  cwd=$(head -n 200 "$1" | grep -o '"cwd"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
+    | sed -e 's/^[^:]*:[[:space:]]*"//' -e 's/"$//' -e 's/\\\\/\\/g')
+  if [ -n "$cwd" ] && [ -d "$cwd" ]; then
+    email="${OBSERVE_USER_EMAIL:-$(git -C "$cwd" config user.email 2>/dev/null)}"
+    name=$(git -C "$cwd" config user.name 2>/dev/null)
+    remote=$(git -C "$cwd" config --get remote.origin.url 2>/dev/null | sed -E 's#(://)[^/@]+@#\1#')
+  else
+    email="${OBSERVE_USER_EMAIL:-$(git config --global user.email 2>/dev/null)}"
+    name=$(git config --global user.name 2>/dev/null)
+    remote=""
+  fi
+  login="$GH_LOGIN"
+  if [ -z "$login" ] && [ -f "$DATA/gh_login" ]; then login=$(cat "$DATA/gh_login"); fi
+  host="$(hostname 2>/dev/null || printf '%s' "${HOSTNAME:-}")"
+  os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  m="\"user_email\":\"$(esc "$email")\",\"user_name\":\"$(esc "$name")\",\"hostname\":\"$(esc "$host")\",\"os\":\"$(esc "$os")\""
+  m="$m,\"agent\":\"$AGENT\",\"plugin_version\":\"$PLUGIN_VERSION\",\"runtime\":\"local\""
+  [ -n "$login" ] && m="$m,\"github_login\":\"$(esc "$login")\""
+  [ -n "$AGENT_NAME" ] && m="$m,\"agent_name\":\"$(esc "$AGENT_NAME")\""
+  [ -n "$remote" ] && m="$m,\"git\":{\"remote\":\"$(esc "$remote")\"}"
+  printf '{"meta":{%s}}' "$m"
+}
+
+# Upload one transcript, resuming where the last attempt stopped.
+#   0 imported   3 nothing to import (recorded live, empty, another key's)
+#   1 stop for now (already noted)   2 stop: the organization turned it off
+backfill_one() {
+  local f=$1 sid=$2 led="$BF/sessions/$2" chunk="$BF/.chunk.$$" off total header n code resp body end lines=400 busy=0
+  off=$(cat "$led" 2>/dev/null)
+  case "$off" in ''|*[!0-9]*) off=0 ;; esac
+  total=$(wc -l < "$f" | tr -d ' ')
+  header=$(backfill_header "$f")
+  while :; do
+    touch "$BF/lock" 2>/dev/null
+    tail -n "+$((off + 1))" "$f" | head -n "$lines" > "$chunk.lines"
+    n=$(wc -l < "$chunk.lines" | tr -d ' ')
+    [ "$n" -eq 0 ] && [ -s "$chunk.lines" ] && n=1  # a last line without its newline
+    end=""
+    [ $((off + n)) -ge "$total" ] && end="&end=1"
+    { printf '%s\n' "$header"; cat "$chunk.lines"; } > "$chunk"
+    resp=$(curl -sS --max-time 120 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/x-ndjson' \
+      --data-binary @"$chunk" "$URL/api/v1/ingest/import?session_id=$sid&start_line=$off$end" -w '\n%{http_code}' 2>/dev/null)
+    code=${resp##*$'\n'}
+    body=${resp%$'\n'*}
+    case "$code" in
+      2*)
+        busy=0
+        case "$body" in *'"skipped"'*) echo "done" > "$led"; return 3 ;; esac
+        off=$((off + n))
+        if [ -n "$end" ]; then
+          echo "done" > "$led"
+          printf '%s\n' "$sid" >> "$BF/imported"
+          return 0
+        fi
+        printf '%s' "$off" > "$led"
+        [ "$lines" -lt 400 ] && lines=$(( lines * 2 > 400 ? 400 : lines * 2 )) ;;
+      413)
+        # Too big for the server. Send less at a time; a single line that is
+        # still too big is skipped, or it would block every line after it.
+        if [ "$lines" -gt 1 ]; then lines=$(( lines / 8 > 0 ? lines / 8 : 1 ))
+        else off=$((off + 1)); printf '%s' "$off" > "$led"; fi ;;
+      503)
+        # Another machine's import is running. Wait our turn, for a while.
+        busy=$((busy + 1))
+        if [ "$busy" -gt 30 ]; then backfill_wait 600 "waiting: the server is busy importing other sessions"; return 1; fi
+        sleep 60 ;;
+      403)
+        case "$body" in
+          *'does not import'*) return 2 ;;
+          *) echo "done" > "$led"; return 3 ;;  # started with another key: not ours to import
+        esac ;;
+      400) echo "done" > "$led"; return 3 ;;    # the server can never take it
+      *) backfill_wait 600 "stopped: the server answered HTTP ${code:-000}; trying again later"; return 1 ;;
+    esac
+  done
+}
+
+# The background process itself.
+backfill_run() {
+  mkdir -p "$BF/sessions" 2>/dev/null
+  backfill_lock || return 0
+  trap 'rmdir "$BF/lock" 2>/dev/null; rm -f "$BF/.chunk.$$" "$BF/.chunk.$$.lines"' EXIT
+  local resp code days f sid fresh=0 imported=0 rc
+  resp=$(curl -sS --max-time 10 -H "Authorization: Bearer $TOKEN" "$URL/api/v1/ingest/backfill" -w '\n%{http_code}' 2>/dev/null)
+  code=${resp##*$'\n'}
+  days=$(printf '%s' "${resp%$'\n'*}" | grep -o '"days"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+  case "$code" in
+    200) ;;
+    404) backfill_wait 604800 "off: this server does not import earlier sessions"; return 0 ;;
+    *) backfill_wait 3600 "waiting: could not ask the server (HTTP ${code:-000})"; return 0 ;;
+  esac
+  # Off: an administrator may turn it on later, so ask again tomorrow.
+  if [ "${days:-0}" -le 0 ]; then backfill_wait 86400 "off: your organization does not import earlier sessions"; return 0; fi
+  backfill_note "running: importing sessions from the last $days days"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    sid=$(backfill_sid "$f")
+    [ -n "$sid" ] || continue
+    [ "$(cat "$BF/sessions/$sid" 2>/dev/null)" = "done" ] && continue
+    # Recorded live by this plugin: its hook events are the record.
+    if [ -f "$STATE/$sid.tlines" ] || [ -f "$STATE/$sid.ident" ]; then echo "done" > "$BF/sessions/$sid"; continue; fi
+    # Still being written: a session that was already running when the
+    # plugin was installed. Next time, once it has gone quiet.
+    if [ -n "$(find "$f" -mmin -30 2>/dev/null)" ]; then fresh=$((fresh + 1)); continue; fi
+    backfill_one "$f" "$sid" </dev/null
+    rc=$?
+    case $rc in
+      0) imported=$((imported + 1)) ;;
+      3) ;;
+      2) backfill_wait 86400 "off: your organization does not import earlier sessions"; return 0 ;;
+      *) return 0 ;;
+    esac
+  done <<EOF
+$(backfill_files "$days")
+EOF
+  local total
+  total=$(wc -l < "$BF/imported" 2>/dev/null | tr -d ' ')
+  if [ "$fresh" -gt 0 ]; then
+    backfill_note "running: ${total:-0} sessions imported; $fresh still in use, imported once they have been quiet for 30 minutes"
+  else
+    touch "$BF/done"
+    backfill_note "finished: ${total:-0} sessions from the last $days days imported"
+  fi
+  return 0
+}
+
+backfill_report() {
+  local at what
+  if [ -f "$BF/last" ]; then
+    read -r at what < "$BF/last"
+    echo "  backfill:      $what ($(( ($(date +%s) - ${at:-0}) / 60 )) min ago)$(backfill_running && echo '; running now')"
+  elif is_true "$TRANSCRIPTS"; then
+    echo "  backfill:      not started yet (starts with the next session)"
+  else
+    echo "  backfill:      off (transcript uploads are off)"
+  fi
+}
+
+# ----------------------------------------------------------------------------
 # Maintenance commands (used by the plugin's slash commands).
 # ----------------------------------------------------------------------------
 mask() { local t=$1; [ ${#t} -gt 14 ] && printf '%s…' "${t:0:14}" || printf '%s' "${t:+set}"; }
@@ -204,6 +422,7 @@ case "$ARG" in
     echo "  transcripts:   $(is_true "$TRANSCRIPTS" && echo upload || echo off)"
     echo "  data dir:      $DATA"
     echo "  spooled events: $(spool_count)"
+    backfill_report
     if [ -f "$STATE/last_error" ]; then
       read -r err_code err_at < "$STATE/last_error"
       case "$err_code" in
@@ -217,6 +436,29 @@ case "$ARG" in
       resp=$(curl -sS --max-time 5 -H "Authorization: Bearer $TOKEN" "$URL/api/v1/ingest/ping" -w ' HTTP_%{http_code}' 2>&1)
       echo "  server check:  $resp"
     fi
+    exit 0 ;;
+  --backfill)
+    # Start it now (in the background) rather than at the next session.
+    if ! is_true "$TRANSCRIPTS"; then
+      echo "Brokk Observe backfill uploads transcripts, and transcript uploads are off on this machine (OBSERVE_TRANSCRIPTS)."
+      exit 0
+    fi
+    if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
+      echo "Brokk Observe is not configured on this machine: run observe-hook.sh --register you@company.com https://your-server"
+      exit 0
+    fi
+    mkdir -p "$BF" 2>/dev/null
+    rm -f "$BF/wait_until" "$BF/done"
+    if backfill_running; then
+      echo "Brokk Observe: importing sessions from before the plugin is already running in the background."
+    else
+      backfill_start
+      echo "Brokk Observe: importing sessions from before the plugin, in the background. Nothing waits for it."
+    fi
+    backfill_report
+    exit 0 ;;
+  --backfill-run)
+    backfill_run
     exit 0 ;;
   --flush)
     before=$(spool_count)
@@ -385,6 +627,8 @@ case "$EVENT" in
       flush
       upload_transcript "$SID" "$TP"
     ) </dev/null >/dev/null 2>&1 &
+    # The sessions from before the plugin, if there are any to import.
+    if backfill_due && ! backfill_running; then backfill_start; fi
     ;;
   Stop|PreCompact|SubagentStop)
     TP=$(json_str transcript_path)

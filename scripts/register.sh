@@ -160,6 +160,13 @@ if [ "${OBSERVE_SKIP_PLUGIN:-}" != 1 ]; then
     codex_trust
   fi
   echo "Start a new session and it appears in the dashboard: $URL"
+  # Whether the sessions that ran here before are uploaded too: say so.
+  days=$(curl -sS --max-time 10 -H "Authorization: Bearer $TOKEN" "$URL/api/v1/ingest/backfill" 2>/dev/null \
+    | grep -o '"days"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+  if [ "${days:-0}" -gt 0 ] 2>/dev/null; then
+    echo "Your organization also imports the sessions that ran on this machine in the last $days days."
+    echo "They upload in the background once the next session starts; nothing waits for them."
+  fi
 fi
 if [ -n "${OBSERVE_TOKEN:-}" ] && [ "$OBSERVE_TOKEN" != "$TOKEN" ]; then
   echo "Note: OBSERVE_TOKEN is set in your environment and takes precedence; unset it to use the new key." >&2

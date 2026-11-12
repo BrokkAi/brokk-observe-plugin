@@ -49,8 +49,9 @@ These are Claude Code slash commands.
 | `/brokk-observe:status` | Server, token, enforcement mode, spooled events, and a live connectivity check |
 | `/brokk-observe:session` | This session's audit summary: tool calls, cost, risk score, open findings, dashboard link |
 | `/brokk-observe:flush` | Send any locally spooled events now |
+| `/brokk-observe:backfill` | Import this machine's sessions from before the plugin now, in the background, instead of at the next session start |
 
-Codex has no plugin slash commands. Run the script behind them in a terminal instead, with `--status`, `--session` or `--flush`:
+Codex has no plugin slash commands. Run the script behind them in a terminal instead, with `--status`, `--session`, `--flush` or `--backfill codex`:
 
 ```
 ~/.codex/plugins/cache/brokk/brokk-observe/*/scripts/observe-hook.sh --status
@@ -131,6 +132,17 @@ To make auditing mandatory in Claude Code, use [managed settings](https://code.c
 
 **Codex:** install the plugin as above and set `OBSERVE_URL`, `OBSERVE_TOKEN` and `OBSERVE_ENFORCE` in the environment Codex runs in. Hooks a user installs need that user's review before they run. To make them mandatory, deploy the hook script with your device management and declare the hooks in Codex's `requirements.toml`: managed hooks are trusted by policy and cannot be switched off, and `allow_managed_hooks_only = true` stops other hooks from running. See [Codex hooks](https://developers.openai.com/codex/hooks). Each managed hook command is the script, the event name and `codex`, as in [hooks/codex-hooks.json](hooks/codex-hooks.json).
 
+## Sessions from before the plugin
+
+The plugin records sessions from the moment it is installed. The sessions that ran on the machine before are still on disk, as the transcripts Claude Code keeps (30 days by default) and the session logs Codex keeps. If your organization allows it (an administrator chooses how many days back, under **Settings → Sessions from before the plugin**; it is off until then), the plugin uploads those once. They show up in the dashboard marked *imported*.
+
+- **Nothing waits for it.** A session start only checks a few local files. If there is a backfill to do, it starts a detached, low-priority background process and carries on. The process sends each transcript a few hundred lines per request.
+- **It picks up where it stopped.** Every transcript keeps its place, so if the laptop sleeps or the server is busy, the next session start resumes it. It has its own lock, so live events are never held up behind it.
+- **It leaves live sessions alone.** Sessions the plugin recorded as they ran are skipped. A session that was still running when the plugin was installed is uploaded once it has been quiet for 30 minutes.
+- **It needs transcript uploads.** With `OBSERVE_TRANSCRIPTS=false` it does not run.
+
+`/brokk-observe:status` shows how far it got. `/brokk-observe:backfill` starts it right away. Codex has no slash commands; run `observe-hook.sh --backfill codex` in a terminal instead.
+
 ## How it works
 
 - **Never slows the agent down.** Each hook writes its event to a local spool (no network) in about 20–60 ms, then exits. A background flusher sends spooled events in order. Git is only consulted at session boundaries. In enforce mode, `PreToolUse` makes one synchronous request, bounded by `OBSERVE_TIMEOUT`.
@@ -145,6 +157,7 @@ To make auditing mandatory in Claude Code, use [managed settings](https://code.c
 - Git remote, with any embedded credentials stripped before sending, plus branch, HEAD, and the subjects of commits you made during the session.
 - Your git email and name, your GitHub login if known, hostname and OS.
 - With transcript upload on: the session transcript (Claude Code) or session log (Codex).
+- If your organization turns on backfill: the transcripts and session logs of the sessions from the days before the plugin was installed, once.
 
 The server **redacts secrets on ingest** before anything is stored. Covered patterns include cloud keys, GitHub/Anthropic/OpenAI/Stripe/Slack tokens, private keys, JWTs, connection-string passwords and generic `password=` assignments. Each redaction is itself recorded as a security finding, so leaked credentials get rotated. Admins can set a retention period (`OBSERVE_RETENTION_DAYS`). Every dashboard action, such as triage, export or policy change, is written to an admin audit log.
 
