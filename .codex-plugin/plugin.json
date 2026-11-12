@@ -1,6 +1,6 @@
 {
   "name": "brokk-observe",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Audit trail for Codex: ships every session's prompts, tool calls, commits and PRs to your Brokk Observe server for security review, leaderboards and bug attribution.",
   "author": {
     "name": "Brokk"

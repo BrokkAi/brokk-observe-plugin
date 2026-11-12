@@ -87,6 +87,7 @@ Set these as environment variables or as `KEY=VALUE` lines in `~/.config/brokk-o
 | `OBSERVE_FAIL_CLOSED` | `false` | In enforce mode, deny tool calls when the server is unreachable |
 | `OBSERVE_TIMEOUT` | `3` | Seconds to wait for a policy decision |
 | `OBSERVE_TRANSCRIPTS` | `true` | Upload the transcript, or Codex's session log (for token/cost data, failed commands and LLM audit) |
+| `OBSERVE_MEMORY` | `true` | Report the agent's memory: the instruction files it loaded and the notes it keeps for itself (see [Agent memory](#agent-memory)) |
 | `OBSERVE_GITHUB_LOGIN` | from `gh` | Links your sessions to your PRs and reviews |
 | `OBSERVE_AGENT_NAME` | `claude-code` or `codex` | Label for automated agents, e.g. `nightly-triage` |
 | `OBSERVE_USER_EMAIL` | `git config user.email` | Identity override |
@@ -139,12 +140,24 @@ To make auditing mandatory in Claude Code, use [managed settings](https://code.c
 - **Never changes behaviour by accident.** Apart from that warning the script prints nothing and always exits 0. The only exception is enforce mode, where it prints the server's decision. Enforce mode fails open unless `OBSERVE_FAIL_CLOSED=true`; with fail-closed on, a plugin that has no server configured denies tool calls too.
 - **Portable.** It needs only bash 3.2+ (macOS default), `curl` and `git`. No jq, Python or Node.
 
+## Agent memory
+
+What an agent carries from one session to the next shapes what it does: the instruction files it loads and the notes it keeps for itself. With `OBSERVE_MEMORY` on (the default), the plugin reports them at the start of each session, at the end of each turn and when the session ends, so a finding or a bug can be traced to what the agent had been told, and that to the session that told it. The plugin only reads these files; it never writes them.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Instruction files | every file Claude Code reports loading (`InstructionsLoaded`): CLAUDE.md, CLAUDE.local.md, `.claude/rules/`, imports, managed CLAUDE.md, and why each was loaded; a project's AGENTS.md when there is no CLAUDE.md | `AGENTS.md` (or `AGENTS.override.md`) in `$CODEX_HOME` and from the top of the checkout down to the working directory |
+| The agent's own memory | the auto memory directory, `<config>/projects/<project>/memory/*.md`, or wherever `autoMemoryDirectory` puts it; nothing when auto memory is off | `$CODEX_HOME/memories/` and `memories_v2/`, when Codex memories are on. They cover every project on the machine |
+
+Each file is reported by its git blob id. The server answers with the versions it does not hold yet, and only those are sent, so a session that starts with the same memory as the last one sends a list and nothing else. Files over 1 MiB are listed without their content; at most 300 files are reported.
+
 ## What leaves the machine
 
 - The hook event JSON that Claude Code or Codex provides: prompts, tool inputs and outputs, file paths.
 - Git remote, with any embedded credentials stripped before sending, plus branch, HEAD, and the subjects of commits you made during the session.
 - Your git email and name, your GitHub login if known, hostname and OS.
 - With transcript upload on: the session transcript (Claude Code) or session log (Codex).
+- With memory reporting on: the paths and versions of the agent's instruction and memory files, and the content of versions the server does not hold yet.
 
 The server **redacts secrets on ingest** before anything is stored. Covered patterns include cloud keys, GitHub/Anthropic/OpenAI/Stripe/Slack tokens, private keys, JWTs, connection-string passwords and generic `password=` assignments. Each redaction is itself recorded as a security finding, so leaked credentials get rotated. Admins can set a retention period (`OBSERVE_RETENTION_DAYS`). Every dashboard action, such as triage, export or policy change, is written to an admin audit log.
 

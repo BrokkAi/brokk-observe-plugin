@@ -11,6 +11,9 @@
 #   * Never change the agent's behaviour unless policy enforcement is on: the
 #     script prints nothing and exits 0. With enforcement on, PreToolUse asks
 #     the server synchronously and prints its allow/ask/deny decision.
+#   * Read the agent's memory, never write it: at session boundaries the
+#     instruction files it loaded and the notes it keeps for itself are
+#     reported by git blob id, and only content the server lacks is sent.
 #   * Portable: bash 3.2 (macOS), curl and git. No jq, python or node.
 #
 # Usage (from hooks.json):  observe-hook.sh <HookEventName> [codex]   (event JSON on stdin)
@@ -18,7 +21,7 @@
 # Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link, prints a code)
 
 set -u
-PLUGIN_VERSION="0.4.0"
+PLUGIN_VERSION="0.5.0"
 ARG="${1:-}"
 # The agent running the hook: Codex's hooks file passes "codex" (hooks/codex-hooks.json).
 case "${2:-}" in codex) AGENT=codex ;; *) AGENT=claude-code ;; esac
@@ -28,12 +31,12 @@ case "${2:-}" in codex) AGENT=codex ;; *) AGENT=claude-code ;; esac
 # config file (~/.config/brokk-observe/config, KEY=VALUE lines).
 # ----------------------------------------------------------------------------
 CONF_FILE="${OBSERVE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/brokk-observe/config}"
-CF_OBSERVE_URL="" CF_OBSERVE_TOKEN="" CF_OBSERVE_ENFORCE="" CF_OBSERVE_TRANSCRIPTS="" CF_OBSERVE_GITHUB_LOGIN="" CF_OBSERVE_AGENT_NAME="" CF_OBSERVE_FAIL_CLOSED=""
+CF_OBSERVE_URL="" CF_OBSERVE_TOKEN="" CF_OBSERVE_ENFORCE="" CF_OBSERVE_TRANSCRIPTS="" CF_OBSERVE_MEMORY="" CF_OBSERVE_GITHUB_LOGIN="" CF_OBSERVE_AGENT_NAME="" CF_OBSERVE_FAIL_CLOSED=""
 if [ -f "$CONF_FILE" ]; then
   while IFS='=' read -r k v || [ -n "$k" ]; do
     v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
     case "$k" in
-      OBSERVE_URL|OBSERVE_TOKEN|OBSERVE_ENFORCE|OBSERVE_TRANSCRIPTS|OBSERVE_GITHUB_LOGIN|OBSERVE_AGENT_NAME|OBSERVE_FAIL_CLOSED)
+      OBSERVE_URL|OBSERVE_TOKEN|OBSERVE_ENFORCE|OBSERVE_TRANSCRIPTS|OBSERVE_MEMORY|OBSERVE_GITHUB_LOGIN|OBSERVE_AGENT_NAME|OBSERVE_FAIL_CLOSED)
         eval "CF_$k=\$v" ;;  # k is from the fixed allowlist above; v is assigned, never evaluated
     esac
   done < "$CONF_FILE"
@@ -44,6 +47,7 @@ URL="${URL%/}"
 TOKEN="${OBSERVE_TOKEN:-$CF_OBSERVE_TOKEN}"
 ENFORCE="${OBSERVE_ENFORCE:-${CF_OBSERVE_ENFORCE:-false}}"
 TRANSCRIPTS="${OBSERVE_TRANSCRIPTS:-${CF_OBSERVE_TRANSCRIPTS:-true}}"
+MEMORY="${OBSERVE_MEMORY:-${CF_OBSERVE_MEMORY:-true}}"
 GH_LOGIN="${OBSERVE_GITHUB_LOGIN:-$CF_OBSERVE_GITHUB_LOGIN}"
 AGENT_NAME="${OBSERVE_AGENT_NAME:-$CF_OBSERVE_AGENT_NAME}"
 FAIL_CLOSED="${OBSERVE_FAIL_CLOSED:-${CF_OBSERVE_FAIL_CLOSED:-false}}"
@@ -189,6 +193,200 @@ upload_transcript() {
 }
 
 # ----------------------------------------------------------------------------
+# Agent memory: the instruction files a session loaded (CLAUDE.md, AGENTS.md,
+# rules) and the notes the agent keeps for itself (Claude Code's auto memory,
+# Codex's memories). Each file is reported by its git blob id; the server
+# answers with the versions it does not hold yet, and only those are sent.
+# Nothing here writes to the agent's files.
+# ----------------------------------------------------------------------------
+TAB=$(printf '\t')
+MEMORY_MAX_FILES=300
+MEMORY_MAX_BYTES=1048576
+
+# The first string the given Claude Code settings files set `key` to, without jq.
+setting_str() { # $1=key, then settings files, most specific first
+  local key=$1 f v; shift
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    v=$(grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$f" 2>/dev/null | head -n 1 | sed -e 's/^[^:]*:[[:space:]]*"//' -e 's/"$//')
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  done
+  return 1
+}
+
+# True when the most specific settings file that sets `key` sets it false.
+setting_off() { # $1=key, then settings files, most specific first
+  local key=$1 f v; shift
+  for f in "$@"; do
+    [ -f "$f" ] || continue
+    v=$(grep -o "\"$key\"[[:space:]]*:[[:space:]]*[a-z]*" "$f" 2>/dev/null | head -n 1 | sed 's/.*:[[:space:]]*//')
+    if [ -n "$v" ]; then [ "$v" = false ]; return; fi
+  done
+  return 1
+}
+
+# The repository the session runs in, which its worktrees share.
+repo_root() {
+  local d
+  d=$(git -C "$CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case "$d" in
+    */.git) printf '%s' "${d%/.git}" ;;
+    *) git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$CWD" ;;
+  esac
+}
+
+# The directories from the top of the checkout down to the working directory.
+dirs_down() {
+  local d rel
+  d=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null) || d=$CWD
+  while [ -n "$d" ]; do
+    printf '%s\n' "$d"
+    [ "$d" = "$CWD" ] && break
+    case "$CWD" in "$d"/*) rel=${CWD#"$d"/}; d="$d/${rel%%/*}" ;; *) break ;; esac
+  done
+}
+
+# Claude Code's auto memory directory for this session, if it keeps one: it
+# is `<config>/projects/<project>/memory`, where <project> comes from the
+# repository, unless `autoMemoryDirectory` puts it somewhere else.
+claude_memory_dir() { # $1=transcript path
+  local tp=$1 home root projects d
+  [ "${CLAUDE_CODE_DISABLE_AUTO_MEMORY:-}" = 1 ] && return 1
+  home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  root=$(repo_root)
+  set -- "$CWD/.claude/settings.local.json" "$CWD/.claude/settings.json" "$root/.claude/settings.local.json" "$root/.claude/settings.json" "$home/settings.json"
+  setting_off autoMemoryEnabled "$@" && return 1
+  if d=$(setting_str autoMemoryDirectory "$@"); then
+    case "$d" in \~/*) d="$HOME/${d#\~/}" ;; esac
+    [ -d "$d" ] && { printf '%s' "$d"; return 0; }
+  fi
+  projects="$home/projects"
+  case "$tp" in */projects/*/*) projects="${tp%/*}"; projects="${projects%/*}" ;; esac
+  for d in ${CLAUDE_CODE_PROJECT_DIR_NAME:+"$projects/$CLAUDE_CODE_PROJECT_DIR_NAME/memory"} \
+           "$projects/$(printf '%s' "$root" | sed 's/[^A-Za-z0-9]/-/g')/memory" "${tp%/*}/memory"; do
+    [ -d "$d" ] && { printf '%s' "$d"; return 0; }
+  done
+  return 1
+}
+
+# Claude Code's files, one per line: kind, scope, load reason (or -), path.
+claude_memory_files() { # $1=session id $2=transcript path
+  local sid=$1 d f has_claude_md=""
+  # The instruction files Claude Code said it loaded. Those it loaded at the
+  # start come first, so that is the reason kept for a file loaded twice.
+  if [ -f "$STATE/$sid.instr" ]; then
+    { grep "^session_start$TAB" "$STATE/$sid.instr"; grep -v "^session_start$TAB" "$STATE/$sid.instr"; } \
+      | awk -F '\t' -v OFS='\t' '{ print "instructions", $2, $1, $3 }'
+  fi
+  # Claude Code reads a project's AGENTS.md itself, without saying so, when
+  # no CLAUDE.md is on the way down to the working directory.
+  while IFS= read -r d; do
+    for f in CLAUDE.md CLAUDE.local.md .claude/CLAUDE.md; do [ -f "$d/$f" ] && has_claude_md=1; done
+  done <<EOF
+$(dirs_down)
+EOF
+  if [ -z "$has_claude_md" ]; then
+    while IFS= read -r d; do
+      [ -f "$d/AGENTS.md" ] && printf 'instructions\tproject\tsession_start\t%s\n' "$d/AGENTS.md"
+    done <<EOF
+$(dirs_down)
+EOF
+  fi
+  if d=$(claude_memory_dir "$2"); then
+    find "$d" -maxdepth 2 -type f -name '*.md' ! -name '.*' 2>/dev/null | sort | while IFS= read -r f; do
+      printf 'memory\tauto\t-\t%s\n' "$f"
+    done
+  fi
+}
+
+# Codex's files: AGENTS.md (an AGENTS.override.md takes its place) in its
+# home and from the top of the checkout down to the working directory, and
+# its memories when they are on.
+codex_memory_files() {
+  local home="${CODEX_HOME:-$HOME/.codex}" d f
+  if [ -f "$home/AGENTS.override.md" ]; then printf 'instructions\tuser\tsession_start\t%s\n' "$home/AGENTS.override.md"
+  elif [ -f "$home/AGENTS.md" ]; then printf 'instructions\tuser\tsession_start\t%s\n' "$home/AGENTS.md"; fi
+  while IFS= read -r d; do
+    if [ -f "$d/AGENTS.override.md" ]; then printf 'instructions\tproject\tsession_start\t%s\n' "$d/AGENTS.override.md"
+    elif [ -f "$d/AGENTS.md" ]; then printf 'instructions\tproject\tsession_start\t%s\n' "$d/AGENTS.md"; fi
+  done <<EOF
+$(dirs_down)
+EOF
+  for d in "$home/memories" "$home/memories_v2"; do
+    [ -d "$d" ] || continue
+    find "$d" -maxdepth 3 -type f ! -name '.*' ! -path '*/.*' 2>/dev/null | sort | while IFS= read -r f; do
+      printf 'memory\tauto\t-\t%s\n' "$f"
+    done
+  done
+}
+
+# Report the session's memory: `start` when the session starts, `later`
+# otherwise. One report per session runs at a time, under a lock file.
+report_memory() { # $1=session id $2=transcript path $3=start|later
+  is_true "$MEMORY" || return 0
+  local sid=$1 tp=$2 phase=$3
+  [ -n "$sid" ] || return 0
+  local lock="$STATE/$sid.memlock" waited=0
+  until ( set -C; printf '%s' "$$" > "$lock" ) 2>/dev/null; do
+    # A report that was killed leaves its lock behind.
+    if [ -n "$(find "$lock" -mmin +2 2>/dev/null)" ]; then rm -f "$lock"; continue; fi
+    [ "$waited" -lt 50 ] || return 0
+    sleep 0.2; waited=$((waited + 1))
+  done
+  local tmp="$STATE/.mem.$$" sent="$STATE/$sid.mem" complete=true n out code body h p c ok=1
+  if [ "$AGENT" = codex ]; then codex_memory_files; else claude_memory_files "$sid" "$tp"; fi > "$tmp.candidates" 2>/dev/null
+  # One line per file that is there and can be read.
+  awk -F '\t' '!seen[$4]++' "$tmp.candidates" | while IFS="$TAB" read -r kind scope reason p; do
+    if [ -f "$p" ] && [ -r "$p" ]; then printf '%s\t%s\t%s\t%s\n' "$kind" "$scope" "$reason" "$p"; fi
+  done > "$tmp.files"
+  n=$(wc -l < "$tmp.files" | tr -d ' ')
+  if [ "$n" -gt "$MEMORY_MAX_FILES" ]; then
+    head -n "$MEMORY_MAX_FILES" "$tmp.files" > "$tmp.cut" && mv "$tmp.cut" "$tmp.files"
+    complete=false
+  fi
+  : > "$tmp.hashes"
+  # Raw bytes, as the server hashes them: no line-ending or attribute filters.
+  if [ "$n" -gt 0 ] && ! cut -f4 "$tmp.files" | git hash-object --no-filters --stdin-paths > "$tmp.hashes" 2>/dev/null; then
+    n=-1
+  fi
+  touch "$sent.paths"
+  [ "$n" -ge 0 ] && paste "$tmp.hashes" "$tmp.files" | while IFS="$TAB" read -r h kind scope reason p; do
+    [ -n "$h" ] && [ -n "$p" ] || continue
+    when=later
+    if [ "$phase" = start ] || [ "$reason" = session_start ]; then grep -qxF -- "$p" "$sent.paths" || when=start; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$h" "$(wc -c < "$p" | tr -d ' ')" "$kind" "$scope" "$when" "$reason" "$p"
+  done > "$tmp.report"
+  # Nothing to say when a file could not be read while it was hashed, when
+  # there is nothing now and was nothing before, or when the same versions
+  # were all delivered last time.
+  [ -f "$tmp.report" ] && cut -f1,7 "$tmp.report" | sort > "$tmp.key"
+  if [ "$n" -lt 0 ] || { [ "$n" -eq 0 ] && [ ! -s "$sent" ]; } || { [ -f "$STATE/$sid.memok" ] && cmp -s "$tmp.key" "$sent"; }; then
+    rm -f "$tmp.candidates" "$tmp.files" "$tmp.hashes" "$tmp.report" "$tmp.key" "$lock"
+    return 0
+  fi
+  out=$(curl -sS --max-time 15 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: text/plain' \
+        --data-binary @"$tmp.report" "$URL/api/v1/ingest/memory?session_id=$sid&complete=$complete" -w '\n%{http_code}' 2>/dev/null)
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  case "$code" in
+    2*)
+      cp "$tmp.key" "$sent"
+      cut -f7 "$tmp.report" >> "$sent.paths"
+      for h in $(printf '%s' "$body" | grep -o '[0-9a-f]\{40\}'); do
+        p=$(awk -F '\t' -v h="$h" '$1 == h { print $7; exit }' "$tmp.report")
+        [ -f "$p" ] || continue
+        [ "$(wc -c < "$p" | tr -d ' ')" -le "$MEMORY_MAX_BYTES" ] || continue
+        c=$(curl_post "/api/v1/ingest/memory/blob?session_id=$sid" application/octet-stream "$p")
+        # 409: the file changed after it was hashed; the next report has it.
+        case "$c" in 2*|409|413) ;; *) ok=0 ;; esac
+      done
+      if [ "$ok" = 1 ]; then touch "$STATE/$sid.memok"; else rm -f "$STATE/$sid.memok"; fi ;;
+  esac
+  rm -f "$tmp.candidates" "$tmp.files" "$tmp.hashes" "$tmp.report" "$tmp.key" "$lock"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
 # Maintenance commands (used by the plugin's slash commands).
 # ----------------------------------------------------------------------------
 mask() { local t=$1; [ ${#t} -gt 14 ] && printf '%s…' "${t:0:14}" || printf '%s' "${t:+set}"; }
@@ -202,6 +400,7 @@ case "$ARG" in
     echo "  ingest token:  $( [ -n "$TOKEN" ] && mask "$TOKEN" || echo 'NOT CONFIGURED (run observe-hook.sh --register)')"
     echo "  enforcement:   $(is_true "$ENFORCE" && echo "on (fail-$(is_true "$FAIL_CLOSED" && echo closed || echo open))" || echo off)"
     echo "  transcripts:   $(is_true "$TRANSCRIPTS" && echo upload || echo off)"
+    echo "  memory:        $(is_true "$MEMORY" && echo upload || echo off)"
     echo "  data dir:      $DATA"
     echo "  spooled events: $(spool_count)"
     if [ -f "$STATE/last_error" ]; then
@@ -311,6 +510,21 @@ esac
 META="$META}"
 ENVELOPE="{\"v\":1,\"meta\":$META,\"event\":$PAYLOAD}"
 
+# Claude Code names each instruction file as it loads it; the next memory
+# report includes it.
+if [ "$EVENT" = InstructionsLoaded ] && [ -n "$SID" ] && is_true "$MEMORY"; then
+  ip=$(json_str file_path)
+  ir=$(json_str load_reason)
+  case "$ir" in session_start|nested_traversal|path_glob_match|include|compact) ;; *) ir=- ;; esac
+  case "$(json_str memory_type)" in User) it=user ;; Local) it=local ;; Managed) it=managed ;; *) it=project ;; esac
+  case "$ip" in /*) printf '%s\t%s\t%s\n' "$ir" "$it" "$ip" >> "$STATE/$SID.instr" ;; esac
+fi
+
+# What this script keeps about a session, once the session has ended.
+forget_session() {
+  rm -f "$IDENT" "$STATE/$SID.head0" "$STATE/$SID.instr" "$STATE/$SID.mem" "$STATE/$SID.mem.paths" "$STATE/$SID.memok" 2>/dev/null
+}
+
 spool_write() {
   local f="$SPOOL/$TS-$$-$RANDOM"
   printf '%s\n' "$ENVELOPE" > "$f.tmp" && mv "$f.tmp" "$f.json"
@@ -344,13 +558,14 @@ case "$EVENT" in
     if [ "$AGENT" = codex ]; then
       # Codex stops a SessionEnd hook after three seconds at most, so the
       # last delivery runs detached and outlives both the hook and Codex.
-      ( flush 5; upload_transcript "$SID" "$TP"; rm -f "$IDENT" "$STATE/$SID.head0" ) </dev/null >/dev/null 2>&1 &
+      ( flush 5; upload_transcript "$SID" "$TP"; report_memory "$SID" "$TP" later; forget_session ) </dev/null >/dev/null 2>&1 &
       exit 0
     fi
     # Finish synchronously so nothing is lost when Claude exits (e.g. -p mode).
     flush 5
     upload_transcript "$SID" "$TP"
-    rm -f "$IDENT" "$STATE/$SID.head0" 2>/dev/null
+    report_memory "$SID" "$TP" later
+    forget_session
     exit 0 ;;
   SessionStart)
     TP=$(json_str transcript_path)
@@ -384,11 +599,12 @@ case "$EVENT" in
       fi
       flush
       upload_transcript "$SID" "$TP"
+      report_memory "$SID" "$TP" start
     ) </dev/null >/dev/null 2>&1 &
     ;;
   Stop|PreCompact|SubagentStop)
     TP=$(json_str transcript_path)
-    ( flush; upload_transcript "$SID" "$TP" ) </dev/null >/dev/null 2>&1 &
+    ( flush; upload_transcript "$SID" "$TP"; report_memory "$SID" "$TP" later ) </dev/null >/dev/null 2>&1 &
     ;;
   *)
     ( flush ) </dev/null >/dev/null 2>&1 &
