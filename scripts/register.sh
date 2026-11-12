@@ -51,12 +51,19 @@ DEVICE_CODE=$(field device_code "$body")
 # The page behind the link asks for this code, so the link alone registers
 # nothing: only someone who can read this terminal can approve the machine.
 USER_CODE=$(field user_code "$body")
+# It is printed for someone to read and type, so it is only believed if it is
+# what such a code looks like: a few letters, digits and dashes. Anything else
+# a server sends here (terminal escapes, a line of instructions) is dropped.
+case "$USER_CODE" in
+  *[!A-Za-z0-9-]*) USER_CODE="" ;;
+esac
+[ "${#USER_CODE}" -le 16 ] || USER_CODE=""
 
 echo "A link is on its way to $EMAIL."
 if [ -n "$USER_CODE" ]; then
   echo "Open it and enter this code to register this machine ($HOST):"
   echo
-  echo "    $USER_CODE"
+  printf '    %s\n' "$USER_CODE"
   echo
   echo "Waiting..."
 else
@@ -80,7 +87,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       exit 1 ;;
   esac
 done
-[ -n "$TOKEN" ] || { echo "The link was not approved in time. Run this again for a new one." >&2; exit 1; }
+[ -n "$TOKEN" ] || { echo "This machine was not approved in time. Run this again for a new link." >&2; exit 1; }
 
 # Keep every other setting in the config file; replace the server and token.
 mkdir -p "$(dirname "$CONF_FILE")"

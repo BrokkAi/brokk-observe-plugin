@@ -15,7 +15,7 @@
 #
 # Usage (from hooks.json):  observe-hook.sh <HookEventName> [codex]   (event JSON on stdin)
 # Maintenance:              observe-hook.sh --status | --flush | --session [id]
-# Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link)
+# Register this machine:    observe-hook.sh --register [email] [server-url]   (mails you a link, prints a code)
 
 set -u
 PLUGIN_VERSION="0.4.0"
